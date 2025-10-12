@@ -1,15 +1,16 @@
-name: Scrape Airbnb Dubai (lot 100 + anti-doublons)
+name: Scrape Airbnb Dubai (limite temps + anti-doublons)
 on:
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 35
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # pour pouvoir commit/push le master CSV
+          fetch-depth: 0
 
       - uses: actions/setup-python@v4
         with:
@@ -24,20 +25,22 @@ jobs:
         run: |
           python -m playwright install --with-deps chromium
 
-      - name: Run scraper (lot)
+      - name: Run scraper (time-bounded)
         run: |
           python scrape_airbnb.py
 
-      - name: Upload RUN CSV as artifact
+      - name: Upload RUN CSV
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: airbnb-dubai-run
           path: airbnb_listings_run.csv
 
-      - name: Commit & push MASTER CSV (if changed)
+      - name: Commit & push MASTER CSV
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add airbnb_listings_master.csv || true
-          git diff --cached --quiet || git commit -m "Update master CSV (new batch)"
-          git push
+          git diff --cached --quiet || git commit -m "Update master CSV (time-bounded run)"
+          git push || true
