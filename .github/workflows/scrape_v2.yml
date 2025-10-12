@@ -1,0 +1,43 @@
+name: Scrape Airbnb Dubai (lot 100 + anti-doublons)
+on:
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # pour pouvoir commit/push le master CSV
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright==1.40.0
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Run scraper (lot)
+        run: |
+          python scrape_airbnb.py
+
+      - name: Upload RUN CSV as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: airbnb-dubai-run
+          path: airbnb_listings_run.csv
+
+      - name: Commit & push MASTER CSV (if changed)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add airbnb_listings_master.csv || true
+          git diff --cached --quiet || git commit -m "Update master CSV (new batch)"
+          git push
