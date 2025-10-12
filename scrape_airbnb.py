@@ -2,7 +2,7 @@ from playwright.sync_api import sync_playwright
 import csv, re, time, random, urllib.parse, os
 
 # ========= CONFIG =========
-SEARCH_URL_BASE = "COLLE_ICI_TON_URL_AIRBNB"   # <-- TON URL AVEC FILTRES (sans items_offset/section_offset)
+SEARCH_URL_BASE = "https://www.airbnb.fr/s/Marina-Walk--Dubai/homes?refinement_paths%5B%5D=%2Fhomes&acp_id=10bf84a9-12d7-4468-983f-e0ab703f2501&date_picker_type=calendar&source=structured_search_input_header&search_type=autocomplete_click&flexible_trip_lengths%5B%5D=one_week&price_filter_input_type=2&price_filter_num_nights=5&channel=EXPLORE&monthly_start_date=2025-11-01&monthly_length=3&monthly_end_date=2026-02-01&place_id=ChIJX47nvlBrXz4RVW5QiQ0Xvjw&location_bb=QcixMUJcmTxByKuqQlyWeQ%3D%3D"   # <-- TON URL AVEC FILTRES (sans items_offset/section_offset)
 MAX_NEW_LISTINGS_PER_RUN = 100                 # objectif en volume (sera aussi borné par le temps)
 TIME_LIMIT_MIN = 30                            # durée max d’un run (minutes)
 
