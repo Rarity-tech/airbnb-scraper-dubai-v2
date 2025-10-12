@@ -2,14 +2,12 @@ from playwright.sync_api import sync_playwright
 import csv, re, time, random, urllib.parse, os
 
 # ========= CONFIG =========
-SEARCH_URL_BASE = "https://www.airbnb.fr/s/Marina-Walk--Dubai/homes?refinement_paths%5B%5D=%2Fhomes&acp_id=10bf84a9-12d7-4468-983f-e0ab703f2501&date_picker_type=calendar&source=structured_search_input_header&search_type=autocomplete_click&flexible_trip_lengths%5B%5D=one_week&price_filter_input_type=2&price_filter_num_nights=5&channel=EXPLORE&monthly_start_date=2025-11-01&monthly_length=3&monthly_end_date=2026-02-01&place_id=ChIJX47nvlBrXz4RVW5QiQ0Xvjw&location_bb=QcixMUJcmTxByKuqQlyWeQ%3D%3D"   # <-- TON URL AVEC FILTRES (sans items_offset/section_offset)
-MAX_NEW_LISTINGS_PER_RUN = 100                 # objectif en volume (sera aussi borné par le temps)
-TIME_LIMIT_MIN = 30                            # durée max d’un run (minutes)
-
+SEARCH_URL_BASE = "https://www.airbnb.fr/s/Marina-Walk--Dubai/homes?refinement_paths%5B%5D=%2Fhomes&acp_id=10bf84a9-12d7-4468-983f-e0ab703f2501&date_picker_type=calendar&source=structured_search_input_header&search_type=autocomplete_click&flexible_trip_lengths%5B%5D=one_week&price_filter_input_type=2&price_filter_num_nights=5&channel=EXPLORE&monthly_start_date=2025-11-01&monthly_length=3&monthly_end_date=2026-02-01&place_id=ChIJX47nvlBrXz4RVW5QiQ0Xvjw&location_bb=QcixMUJcmTxByKuqQlyWeQ%3D%3D"
+MAX_NEW_LISTINGS_PER_RUN = 100
+TIME_LIMIT_MIN = 30
 ITEMS_PER_PAGE = 20
 MAX_OFFSET = 4000
 SECTION_OFFSETS = [0,1,2,3,4,5]
-
 OUTPUT_RUN = "airbnb_listings_run.csv"
 OUTPUT_MASTER = "airbnb_listings_master.csv"
 # =========================
@@ -26,21 +24,19 @@ def clean(s): return (s or "").replace("\xa0"," ").strip()
 def build_page_url(base, items_offset, section_offset):
     p = urllib.parse.urlparse(base)
     q = dict(urllib.parse.parse_qsl(p.query, keep_blank_values=True))
-    q["items_offset"] = str(items_offset)
-    q["section_offset"] = str(section_offset)
+    q["items_offset"] = str(items_offset); q["section_offset"] = str(section_offset)
     return urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(q)))
 
-def load_seen_urls(master_path):
+def load_seen_urls(path):
     seen = set()
-    if os.path.exists(master_path):
-        with open(master_path, "r", encoding="utf-8-sig", newline="") as f:
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
                 u = (row.get("url_annonce") or "").strip()
                 if u: seen.add(u)
     return seen
 
 def extract_license(page):
-    # bloc officiel
     try:
         c = page.query_selector("div[data-testid='listing-permit-license-number']")
         if c:
@@ -50,12 +46,9 @@ def extract_license(page):
                 m = RE_LICENSE_PRIMARY.search(val) or RE_LICENSE_FALLBACK.search(val)
                 return (m.group(1) if m else val).upper()
     except: pass
-    # fallback zones
-    for sel in [
-        "div:has-text('Permit number')","div:has-text('Dubai Tourism permit number')",
-        "div:has-text('Registration')","div:has-text('License')","div:has-text('Licence')",
-        "div:has-text('DTCM')","section[aria-labelledby*='About this space']","div[data-section-id='DESCRIPTION_DEFAULT']",
-    ]:
+    for sel in ["div:has-text('Permit number')","div:has-text('Dubai Tourism permit number')",
+                "div:has-text('Registration')","div:has-text('License')","div:has-text('Licence')",
+                "div:has-text('DTCM')","section[aria-labelledby*='About this space']","div[data-section-id='DESCRIPTION_DEFAULT']"]:
         try:
             el = page.query_selector(sel)
             if el:
@@ -63,7 +56,6 @@ def extract_license(page):
                 m = RE_LICENSE_PRIMARY.search(txt) or RE_LICENSE_FALLBACK.search(txt)
                 if m: return m.group(1).upper()
         except: pass
-    # body
     try:
         body = clean(page.inner_text("body"))
         m = RE_LICENSE_PRIMARY.search(body) or RE_LICENSE_FALLBACK.search(body)
@@ -71,11 +63,9 @@ def extract_license(page):
     except: pass
     return ""
 
-def scrape_host_profile(context, host_url, deadline):
+def scrape_host_profile(context, host_url, start_time):
     note, nb_listings, joined = "", "", ""
-    p = context.new_page()
-    p.goto(host_url, timeout=90000); pause()
-    # scroll léger pour charger
+    p = context.new_page(); p.goto(host_url, timeout=90000); pause()
     for _ in range(10):
         if minutes_elapsed(start_time, now()) >= TIME_LIMIT_MIN: break
         p.evaluate("window.scrollBy(0, document.body.scrollHeight)"); pause(0.25,0.45)
@@ -91,8 +81,7 @@ def scrape_host_profile(context, host_url, deadline):
         j = p.query_selector("span:has-text('Joined')") or p.query_selector("div:has-text('Joined')")
         if j: joined = clean(j.inner_text())
     except: pass
-    p.close()
-    return note, nb_listings, joined
+    p.close(); return note, nb_listings, joined
 
 def collect_urls_from_page(page, exclude_set):
     out, seen_local = [], set()
@@ -108,11 +97,8 @@ def collect_urls_from_page(page, exclude_set):
     except: pass
     return out
 
-# -------- MAIN --------
 if __name__ == "__main__":
-    if "airbnb." not in SEARCH_URL_BASE:
-        raise SystemExit("Mets ton URL de recherche Airbnb dans SEARCH_URL_BASE.")
-
+    if "airbnb." not in SEARCH_URL_BASE: raise SystemExit("Mets ton URL dans SEARCH_URL_BASE.")
     start_time = now()
 
     seen_global = load_seen_urls(OUTPUT_MASTER)
@@ -124,7 +110,6 @@ if __name__ == "__main__":
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
             locale="en-US",
         )
-        # accélérer
         context.route("**/*", lambda r: r.abort() if r.request.resource_type in ["image","media","font"] else r.continue_())
         page = context.new_page()
 
@@ -134,7 +119,7 @@ if __name__ == "__main__":
                and len(new_urls) < MAX_NEW_LISTINGS_PER_RUN 
                and minutes_elapsed(start_time, now()) < TIME_LIMIT_MIN):
             found_here = False
-            for so in SECTION_OFFSETS:
+            for so in [0,1,2,3,4,5]:
                 if minutes_elapsed(start_time, now()) >= TIME_LIMIT_MIN: break
                 url = build_page_url(SEARCH_URL_BASE, items_offset, so)
                 print(f"[search] offset={items_offset} section={so}")
@@ -145,24 +130,20 @@ if __name__ == "__main__":
                         for u in urls:
                             if len(new_urls) >= MAX_NEW_LISTINGS_PER_RUN: break
                             if u not in seen_global:
-                                new_urls.append(u)
-                                seen_global.add(u)
+                                new_urls.append(u); seen_global.add(u)
                         print(f"  +{len(urls)} candidates → nouvelles cumulées={len(new_urls)}")
-                        found_here = True
-                        break
+                        found_here = True; break
                 except Exception as e:
                     print("  (skip)", e)
-            items_offset += ITEMS_PER_PAGE
-            if not found_here:
-                print("  rien de nouveau, on avance…")
+            items_offset += 20
+            if not found_here: print("  rien de nouveau, on avance…")
 
         print(f"[collect] nouvelles URLs à visiter: {len(new_urls)}")
         rows = []
 
-        # Scrape détail
         for i, url in enumerate(new_urls, 1):
             if minutes_elapsed(start_time, now()) >= TIME_LIMIT_MIN:
-                print("[stop] limite de temps atteinte pendant la visite des annonces"); break
+                print("[stop] limite de temps atteinte"); break
             try:
                 page.goto(url, timeout=120000); pause()
                 try:
@@ -199,17 +180,14 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[{i}] ERREUR {url}: {e}")
 
-        # Écrit RUN CSV (toujours)
-        if rows:
-            keys = list(rows[0].keys())
-            with open(OUTPUT_RUN, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.DictWriter(f, fieldnames=keys); w.writeheader()
-                for r in rows: w.writerow(r)
-            print("[ok] CSV run:", OUTPUT_RUN)
-        else:
-            print("[warn] aucune ligne nouvelle dans ce run")
+        # --- ÉCRIRE TOUJOURS LE CSV DU RUN (même vide, avec en-tête) ---
+        header = ["url_annonce","titre_annonce","code_licence","nom_hote","url_profil_hote","note_globale_hote","nb_annonces_hote","date_inscription_hote"]
+        with open(OUTPUT_RUN, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=header); w.writeheader()
+            for r in rows: w.writerow(r)
+        print("[ok] CSV run écrit (peut être vide):", OUTPUT_RUN)
 
-        # Met à jour MASTER sans doublons
+        # MASTER sans doublons
         master_rows = []
         if os.path.exists(OUTPUT_MASTER):
             with open(OUTPUT_MASTER, "r", encoding="utf-8-sig", newline="") as f:
@@ -220,9 +198,8 @@ if __name__ == "__main__":
             if u and u not in existing:
                 master_rows.append(r); existing.add(u)
         if master_rows:
-            keys = ["url_annonce","titre_annonce","code_licence","nom_hote","url_profil_hote","note_globale_hote","nb_annonces_hote","date_inscription_hote"]
             with open(OUTPUT_MASTER, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.DictWriter(f, fieldnames=keys); w.writeheader()
+                w = csv.DictWriter(f, fieldnames=header); w.writeheader()
                 for r in master_rows: w.writerow(r)
             print("[ok] CSV master mis à jour:", OUTPUT_MASTER)
 
