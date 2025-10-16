@@ -20,8 +20,7 @@ function readUrls() {
     .map(l => l.trim())
     .filter(l => l && !l.startsWith("#"));
   if (lines.length === 0) throw new Error("Aucune URL dans urls.txt");
-  // dédoublonnage
-  return Array.from(new Set(lines));
+  return Array.from(new Set(lines)); // dédoublonnage
 }
 
 function ensureOutDir() {
@@ -56,28 +55,13 @@ function extractListingCount(text) {
 function cleanName(raw) {
   if (!raw) return null;
   let s = raw.trim();
-
-  // Exemples courants FR:
-  // "Quelques informations sur Nicole | Airbnb"
-  // "Quelques informations sur Baron Luxe Stays"
   s = s.replace(/^Quelques informations sur\s+/i, "");
-
-  // "Profil de Marie – Paris - Airbnb", "Profil de Marie – Airbnb"
   s = s.replace(/^Profil de\s+/i, "");
-
-  // "À propos de Alexander", "About Alexander"
   s = s.replace(/^À propos de\s+/i, "");
   s = s.replace(/^About\s+/i, "");
-
-  // Retirer le suffixe "- Airbnb" ou variantes
   s = s.replace(/\s*[-–—]\s*Airbnb.*$/i, "");
-
-  // Couper après un séparateur vertical si présent
   s = s.split("|")[0].trim();
-
-  // Limiter la longueur
   if (s && s.length > 80) s = s.slice(0, 80).trim();
-
   return s || null;
 }
 
@@ -87,7 +71,7 @@ function extractRating({ fullText, scriptsJson }) {
       const obj = JSON.parse(json);
       const agg = Array.isArray(obj) ? obj : [obj];
       for (const item of agg) {
-        if (item && item.aggregateRating && item.aggregateRating.ratingValue) {
+        if (item?.aggregateRating?.ratingValue) {
           const val = parseFloat(String(item.aggregateRating.ratingValue).replace(",", "."));
           if (!Number.isNaN(val)) return val;
         }
@@ -121,13 +105,13 @@ function extractName({ metaTitle, h1, metaDesc, fullText }) {
     const cleaned = cleanName(h1);
     if (cleaned && !/Airbnb/i.test(cleaned)) return cleaned;
   }
-  // 3) meta description
+  // 3) meta description (corrigé: tiret échappé dans la classe)
   if (metaDesc) {
-    const m = metaDesc.match(/Profil de\s+([^–—-|]+)[–—-|]/i);
+    const m = metaDesc.match(/Profil de\s+([^–—\-\|]+)[–—\-\|]/i);
     if (m) return cleanName(m[1]);
   }
   // 4) heuristique texte
-  const m2 = fullText.match(/(Quelques informations sur|Profil de)\s+([^\n|]+)\s*(?:\||\n|$)/i);
+  const m2 = fullText.match(/(Quelques informations sur|Profil de)\s+([^\n\|]+)\s*(?:\||\n|$)/i);
   if (m2) return cleanName(m2[2]);
   return null;
 }
@@ -239,7 +223,6 @@ async function main() {
       `| years ${res.years_active ?? "?"}`
     );
 
-    // throttle léger entre profils
     await delay(1200);
   }
 
