@@ -15,76 +15,67 @@ const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 function readUrls() {
   if (!fs.existsSync(INPUT_FILE)) throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
-  const lines = fs.readFileSync(INPUT_FILE, "utf8")
-    .split(/\r?\n/)
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith("#"));
-  if (lines.length === 0) throw new Error("Aucune URL dans urls.txt");
-  return Array.from(new Set(lines)); // dédoublonnage
+  const lines = fs.readFileSync(INPUT_FILE, "utf8").split(/\r?\n/).map(s=>s.trim()).filter(s=>s && !s.startsWith("#"));
+  if (!lines.length) throw new Error("Aucune URL dans urls.txt");
+  return Array.from(new Set(lines));
 }
 
 function ensureOutDir() {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR);
-  const debugDir = path.join(OUT_DIR, "debug");
-  if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir);
-  return debugDir;
+  const dbg = path.join(OUT_DIR, "debug");
+  if (!fs.existsSync(dbg)) fs.mkdirSync(dbg);
+  return dbg;
 }
 
+/* ------------------------ extract helpers ------------------------ */
 function extractJoinedYear(text) {
-  const m1 = text.match(/Membre\s+depuis\s+(\d{4})/i);
-  if (m1) return parseInt(m1[1], 10);
-  const m2 = text.match(/Joined\s+in\s+(\d{4})/i);
-  if (m2) return parseInt(m2[1], 10);
-  const m3 = text.match(/Member\s+since\s+(\d{4})/i);
-  if (m3) return parseInt(m3[1], 10);
-  return null;
-}
-
-function extractListingCount(text) {
-  const patterns = [
-    /(\d+)\s+(annonces|hébergements)/i,
-    /(\d+)\s+listings/i
+  const pats = [
+    /Membre\s+depuis\s+(?:[A-Za-zÀ-ÖØ-öø-ÿ]+\s+)?(\d{4})/i,
+    /Depuis\s+(?:[A-Za-zÀ-ÖØ-öø-ÿ]+\s+)?(\d{4})/i,
+    /Inscrit\s+en\s+(\d{4})/i,
+    /Joined\s+in\s+(?:[A-Za-z]+\s+)?(\d{4})/i,
+    /Member\s+since\s+(?:[A-Za-z]+\s+)?(\d{4})/i
   ];
-  for (const re of patterns) {
+  for (const re of pats) {
     const m = text.match(re);
     if (m) return parseInt(m[1], 10);
   }
   return null;
 }
 
-function cleanName(raw) {
-  if (!raw) return null;
-  let s = raw.trim();
-  s = s.replace(/^Quelques informations sur\s+/i, "");
-  s = s.replace(/^Profil de\s+/i, "");
-  s = s.replace(/^À propos de\s+/i, "");
-  s = s.replace(/^About\s+/i, "");
-  s = s.replace(/\s*[-–—]\s*Airbnb.*$/i, "");
-  s = s.split("|")[0].trim();
-  if (s && s.length > 80) s = s.slice(0, 80).trim();
-  return s || null;
+function extractListingCount(text) {
+  const pats = [
+    /(\d{1,5})\s+(annonces|hébergements)/i,
+    /(\d{1,5})\s+listings?/i
+  ];
+  for (const re of pats) {
+    const m = text.match(re);
+    if (m) return parseInt(m[1], 10);
+  }
+  return null;
 }
 
 function extractRating({ fullText, scriptsJson }) {
   try {
     for (const json of scriptsJson) {
       const obj = JSON.parse(json);
-      const agg = Array.isArray(obj) ? obj : [obj];
-      for (const item of agg) {
-        if (item?.aggregateRating?.ratingValue) {
-          const val = parseFloat(String(item.aggregateRating.ratingValue).replace(",", "."));
+      const arr = Array.isArray(obj) ? obj : [obj];
+      for (const it of arr) {
+        const v = it?.aggregateRating?.ratingValue;
+        if (v != null) {
+          const val = parseFloat(String(v).replace(",", "."));
           if (!Number.isNaN(val)) return val;
         }
       }
     }
   } catch {}
-  const candidates = [
+  const cands = [
     /Note\s+globale\s+([0-9]+[.,][0-9]+)/i,
-    /([0-9]+[.,][0-9]+)\s*[★\*]/i,
-    /([0-9]+[.,][0-9]+)\s*(?:rating|évaluations|reviews)/i,
-    /Moyenne\s+de\s+([0-9]+[.,][0-9]+)/i
+    /Moyenne\s+de\s+([0-9]+[.,][0-9]+)/i,
+    /([0-9]+[.,][0-9]+)\s*(?:évaluations|reviews|rating)/i,
+    /([0-9]+[.,][0-9]+)\s*[★\*]/i
   ];
-  for (const re of candidates) {
+  for (const re of cands) {
     const m = fullText.match(re);
     if (m) {
       const val = parseFloat(m[1].replace(",", "."));
@@ -94,97 +85,154 @@ function extractRating({ fullText, scriptsJson }) {
   return null;
 }
 
-function extractName({ metaTitle, h1, metaDesc, fullText }) {
-  // 1) og:title / twitter:title
-  if (metaTitle) {
-    const cleaned = cleanName(metaTitle);
-    if (cleaned) return cleaned;
+function cleanGeneric(s) {
+  if (!s) return null;
+  s = s.trim();
+  // ignorer les titres génériques Airbnb
+  if (/^Airbnb\s*:/.test(s) || /locations de vacances/i.test(s)) return null;
+  // nettoyage
+  s = s.replace(/^Quelques informations sur\s+/i, "");
+  s = s.replace(/^Profil de\s+/i, "");
+  s = s.replace(/^À propos de\s+/i, "");
+  s = s.replace(/^About\s+/i, "");
+  s = s.replace(/\s*[-–—]\s*Airbnb.*$/i, "");
+  s = s.split("|")[0].trim();
+  if (s.length > 80) s = s.slice(0, 80).trim();
+  return s || null;
+}
+
+function deepFindName(obj, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 6) return null;
+  const keys = ["fullName","displayName","hostName","publicName","name","userName","firstName"];
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (typeof v === "string" && keys.includes(k)) {
+      const c = cleanGeneric(v);
+      if (c && !/Airbnb/i.test(c)) return c;
+    }
   }
-  // 2) h1
-  if (h1) {
-    const cleaned = cleanName(h1);
-    if (cleaned && !/Airbnb/i.test(cleaned)) return cleaned;
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v && typeof v === "object") {
+      const got = deepFindName(v, depth+1);
+      if (got) return got;
+    }
   }
-  // 3) meta description (corrigé: tiret échappé dans la classe)
-  if (metaDesc) {
-    const m = metaDesc.match(/Profil de\s+([^–—\-\|]+)[–—\-\|]/i);
-    if (m) return cleanName(m[1]);
-  }
-  // 4) heuristique texte
-  const m2 = fullText.match(/(Quelques informations sur|Profil de)\s+([^\n\|]+)\s*(?:\||\n|$)/i);
-  if (m2) return cleanName(m2[2]);
   return null;
 }
 
+function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData }) {
+  // 0) next data
+  try {
+    if (nextData) {
+      const nd = JSON.parse(nextData);
+      const n = deepFindName(nd);
+      if (n) return n;
+    }
+  } catch {}
+  // 1) h1
+  if (h1Text) {
+    const n = cleanGeneric(h1Text);
+    if (n) return n;
+    const m = h1Text.match(/Quelques informations sur\s+(.+)/i);
+    if (m) {
+      const c = cleanGeneric(m[1]);
+      if (c) return c;
+    }
+  }
+  // 2) texte de page
+  const t = fullText.match(/(?:Quelques informations sur|Profil de)\s+([^\n\|]+)(?:\s*\||\n|$)/i);
+  if (t) {
+    const c = cleanGeneric(t[1]);
+    if (c) return c;
+  }
+  // 3) meta
+  if (metaDesc) {
+    const m = metaDesc.match(/Profil de\s+([^–—\-\|]+)[–—\-\|]/i);
+    if (m) {
+      const c = cleanGeneric(m[1]);
+      if (c) return c;
+    }
+  }
+  if (metaTitle) {
+    const c = cleanGeneric(metaTitle);
+    if (c) return c;
+  }
+  return null;
+}
+
+/* ------------------------ core scrape ------------------------ */
 async function scrapeOne(page, url, debugDir, idx) {
-  const result = {
-    url,
-    name: null,
-    rating: null,
-    joined_year: null,
-    years_active: null,
-    listing_count: null,
-    notes: ""
-  };
+  const out = { url, name: null, rating: null, joined_year: null, years_active: null, listing_count: null, notes: "" };
 
   try {
     const timeoutMs = 90000;
 
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     );
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      "Upgrade-Insecure-Requests": "1"
+    });
     await page.setViewport({ width: 1366, height: 900 });
 
     await page.goto(url, { waitUntil: "networkidle0", timeout: timeoutMs });
-    await delay(6000);
+
+    // scroll pour déclencher le rendu lazy
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight * 0.5); });
+    await delay(1200);
+    await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); });
+    await delay(2000);
+    await page.evaluate(() => { window.scrollTo(0, 0); });
+    await delay(800);
 
     const data = await page.evaluate(() => {
-      const getAttr = (sel, attr) => document.querySelector(sel)?.getAttribute(attr) || null;
-      const metaTitle = getAttr('meta[property="og:title"]', "content") ||
-                        getAttr('meta[name="twitter:title"]', "content") || null;
-      const metaDesc  = getAttr('meta[name="description"]', "content") || null;
-      const h1 = document.querySelector("h1")?.innerText || null;
+      const q = (sel) => document.querySelector(sel);
+      const getAttr = (sel, attr) => q(sel)?.getAttribute(attr) || null;
+      const metaTitle = getAttr('meta[property="og:title"]',"content") || getAttr('meta[name="twitter:title"]',"content") || null;
+      const metaDesc  = getAttr('meta[name="description"]',"content") || null;
+
+      // essai h1 + variantes fréquentes
+      let h1Text = q("h1")?.innerText || null;
+      if (!h1Text) {
+        const alt = q('[data-testid="user-profile__heading"], [data-testid="user-profile-heading"]');
+        h1Text = alt?.textContent || null;
+      }
+
       const fullText = document.body?.innerText || "";
 
       const scriptsJson = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map(s => s.textContent || "");
 
       let nextData = null;
-      try {
+      try { // Next.js payload parfois présent
         // @ts-ignore
         nextData = window.__NEXT_DATA__ ? JSON.stringify(window.__NEXT_DATA__) : null;
       } catch {}
 
-      return { metaTitle, metaDesc, h1, fullText, scriptsJson, nextData };
+      return { metaTitle, metaDesc, h1Text, fullText, scriptsJson, nextData };
     });
 
+    // debug
     const html = await page.content();
-    const shotPath = path.join(debugDir, `page_${idx + 1}.png`);
-    const htmlPath = path.join(debugDir, `page_${idx + 1}.html`);
-    fs.writeFileSync(htmlPath, html, "utf8");
-    await page.screenshot({ path: shotPath, fullPage: true });
+    fs.writeFileSync(path.join(debugDir, `page_${idx+1}.html`), html, "utf8");
+    await page.screenshot({ path: path.join(debugDir, `page_${idx+1}.png`), fullPage: true });
 
-    result.name = extractName(data);
-    result.rating = extractRating(data);
-    result.joined_year = extractJoinedYear(data.fullText);
-    if (result.joined_year && result.joined_year <= NOW_YEAR) {
-      result.years_active = NOW_YEAR - result.joined_year;
-    }
-    result.listing_count = extractListingCount(data.fullText);
+    // parse
+    out.name = pickName(data);
+    out.rating = extractRating(data);
+    out.joined_year = extractJoinedYear(data.fullText);
+    if (out.joined_year && out.joined_year <= NOW_YEAR) out.years_active = NOW_YEAR - out.joined_year;
+    out.listing_count = extractListingCount(data.fullText);
 
-    const missing = [];
-    for (const key of ["name", "rating", "joined_year", "listing_count"]) {
-      if (result[key] == null) missing.push(key);
-    }
-    if (missing.length) {
-      result.notes = `Champs manquants: ${missing.join(", ")}. Voir output/debug/page_${idx + 1}.*`;
-    }
-
-    return result;
-  } catch (err) {
-    result.notes = `Erreur: ${err?.message || String(err)}`;
-    return result;
+    const miss = [];
+    for (const k of ["name","rating","joined_year","listing_count"]) if (out[k] == null) miss.push(k);
+    if (miss.length) out.notes = `Champs manquants: ${miss.join(", ")}. Voir output/debug/page_${idx+1}.*`;
+    return out;
+  } catch (e) {
+    out.notes = `Erreur: ${e?.message || String(e)}`;
+    return out;
   }
 }
 
@@ -194,48 +242,30 @@ async function main() {
 
   const browser = await puppeteer.launch({
     headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--window-size=1366,900"
-    ]
+    args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--window-size=1366,900"]
   });
-
   const page = await browser.newPage();
 
   const results = [];
   for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
-    let res = await scrapeOne(page, url, debugDir, i);
-
-    if (/Champs manquants/.test(res.notes) || /Erreur/.test(res.notes)) {
-      await delay(5000);
-      res = await scrapeOne(page, url, debugDir, i);
+    let r = await scrapeOne(page, urls[i], debugDir, i);
+    if (/Champs manquants/.test(r.notes) || /Erreur/.test(r.notes)) {
+      await delay(1500);
+      r = await scrapeOne(page, urls[i], debugDir, i);
     }
-    results.push(res);
-
-    console.log(
-      `[${i + 1}/${urls.length}] ${url} => ` +
-      `${res.name || "?"} | rating ${res.rating ?? "?"} ` +
-      `| listings ${res.listing_count ?? "?"} ` +
-      `| joined ${res.joined_year ?? "?"} ` +
-      `| years ${res.years_active ?? "?"}`
-    );
-
-    await delay(1200);
+    results.push(r);
+    console.log(`[${i+1}/${urls.length}] ${urls[i]} => ${r.name || "?"} | rating ${r.rating ?? "?"} | listings ${r.listing_count ?? "?"} | joined ${r.joined_year ?? "?"} | years ${r.years_active ?? "?"}`);
+    await delay(800);
   }
 
-  await browser.close();
-
   const csv = Papa.unparse(results, {
-    columns: ["url", "name", "rating", "joined_year", "years_active", "listing_count", "notes"]
+    columns: ["url","name","rating","joined_year","years_active","listing_count","notes"]
   });
-  fs.writeFileSync(OUT_CSV, csv, "utf8");
+  // UTF-8 BOM pour Excel
+  fs.writeFileSync(OUT_CSV, "\uFEFF" + csv, "utf8");
   console.log(`\nFini. Résultats: ${OUT_CSV}`);
+
+  await browser.close();
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+main().catch(err => { console.error(err); process.exit(1); });
