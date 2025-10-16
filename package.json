@@ -1,6 +1,6 @@
 {
   "name": "airbnb-scraper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Scrape Airbnb host profile data via GitHub Actions",
   "main": "scraper.js",
   "type": "module",
@@ -9,6 +9,6 @@
   },
   "dependencies": {
     "papaparse": "^5.4.1",
-    "puppeteer": "^23.7.0"
+    "puppeteer": "^24.16.0"
   }
 }
