@@ -14,15 +14,14 @@ const NOW_YEAR = new Date().getFullYear();
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 function readUrls() {
-  if (!fs.existsSync(INPUT_FILE)) {
-    throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
-  }
+  if (!fs.existsSync(INPUT_FILE)) throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
   const lines = fs.readFileSync(INPUT_FILE, "utf8")
     .split(/\r?\n/)
     .map(l => l.trim())
     .filter(l => l && !l.startsWith("#"));
   if (lines.length === 0) throw new Error("Aucune URL dans urls.txt");
-  return lines;
+  // dédoublonnage
+  return Array.from(new Set(lines));
 }
 
 function ensureOutDir() {
@@ -52,6 +51,34 @@ function extractListingCount(text) {
     if (m) return parseInt(m[1], 10);
   }
   return null;
+}
+
+function cleanName(raw) {
+  if (!raw) return null;
+  let s = raw.trim();
+
+  // Exemples courants FR:
+  // "Quelques informations sur Nicole | Airbnb"
+  // "Quelques informations sur Baron Luxe Stays"
+  s = s.replace(/^Quelques informations sur\s+/i, "");
+
+  // "Profil de Marie – Paris - Airbnb", "Profil de Marie – Airbnb"
+  s = s.replace(/^Profil de\s+/i, "");
+
+  // "À propos de Alexander", "About Alexander"
+  s = s.replace(/^À propos de\s+/i, "");
+  s = s.replace(/^About\s+/i, "");
+
+  // Retirer le suffixe "- Airbnb" ou variantes
+  s = s.replace(/\s*[-–—]\s*Airbnb.*$/i, "");
+
+  // Couper après un séparateur vertical si présent
+  s = s.split("|")[0].trim();
+
+  // Limiter la longueur
+  if (s && s.length > 80) s = s.slice(0, 80).trim();
+
+  return s || null;
 }
 
 function extractRating({ fullText, scriptsJson }) {
@@ -84,23 +111,24 @@ function extractRating({ fullText, scriptsJson }) {
 }
 
 function extractName({ metaTitle, h1, metaDesc, fullText }) {
+  // 1) og:title / twitter:title
   if (metaTitle) {
-    const cleaned = metaTitle
-      .replace(/Profil de\s*/i, "")
-      .replace(/\s*[-–—]\s*Airbnb.*/i, "")
-      .trim();
-    if (cleaned && cleaned.length <= 80) return cleaned;
+    const cleaned = cleanName(metaTitle);
+    if (cleaned) return cleaned;
   }
+  // 2) h1
   if (h1) {
-    const h = h1.trim();
-    if (h && h.length <= 80 && !/Airbnb/i.test(h)) return h;
+    const cleaned = cleanName(h1);
+    if (cleaned && !/Airbnb/i.test(cleaned)) return cleaned;
   }
+  // 3) meta description
   if (metaDesc) {
-    const m = metaDesc.match(/Profil de\s+([^–—-]+)[–—-]/i);
-    if (m) return m[1].trim();
+    const m = metaDesc.match(/Profil de\s+([^–—-|]+)[–—-|]/i);
+    if (m) return cleanName(m[1]);
   }
-  const m2 = fullText.match(/Profil de\s+([^\n]+)\n/i);
-  if (m2) return m2[1].trim();
+  // 4) heuristique texte
+  const m2 = fullText.match(/(Quelques informations sur|Profil de)\s+([^\n|]+)\s*(?:\||\n|$)/i);
+  if (m2) return cleanName(m2[2]);
   return null;
 }
 
@@ -202,7 +230,17 @@ async function main() {
       res = await scrapeOne(page, url, debugDir, i);
     }
     results.push(res);
-    console.log(`[${i + 1}/${urls.length}] ${url} => ${res.name || "?"} | rating ${res.rating ?? "?"} | listings ${res.listing_count ?? "?"}`);
+
+    console.log(
+      `[${i + 1}/${urls.length}] ${url} => ` +
+      `${res.name || "?"} | rating ${res.rating ?? "?"} ` +
+      `| listings ${res.listing_count ?? "?"} ` +
+      `| joined ${res.joined_year ?? "?"} ` +
+      `| years ${res.years_active ?? "?"}`
+    );
+
+    // throttle léger entre profils
+    await delay(1200);
   }
 
   await browser.close();
