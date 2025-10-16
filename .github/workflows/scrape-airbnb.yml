@@ -6,10 +6,6 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    env:
-      PUPPETEER_SKIP_DOWNLOAD: "false"
-      PUPPETEER_PRODUCT: "chrome"
-      PUPPETEER_EXECUTABLE_PATH: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +16,7 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: npm ci || npm i
+        run: npm i
 
       - name: Run scraper
         run: npm start
