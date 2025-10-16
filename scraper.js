@@ -10,8 +10,8 @@ const __dirname = path.dirname(__filename);
 const INPUT_FILE = path.join(__dirname, "urls.txt");
 const OUT_DIR = path.join(__dirname, "output");
 const OUT_CSV = path.join(OUT_DIR, "results.csv");
-
 const NOW_YEAR = new Date().getFullYear();
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 function readUrls() {
   if (!fs.existsSync(INPUT_FILE)) {
@@ -33,7 +33,6 @@ function ensureOutDir() {
 }
 
 function extractJoinedYear(text) {
-  // FR: "Membre depuis 2017" | EN: "Joined in 2017"
   const m1 = text.match(/Membre\s+depuis\s+(\d{4})/i);
   if (m1) return parseInt(m1[1], 10);
   const m2 = text.match(/Joined\s+in\s+(\d{4})/i);
@@ -44,8 +43,6 @@ function extractJoinedYear(text) {
 }
 
 function extractListingCount(text) {
-  // Heuristiques fréquentes
-  // FR: "annonces", "hébergements" | EN: "listings"
   const patterns = [
     /(\d+)\s+(annonces|hébergements)/i,
     /(\d+)\s+listings/i
@@ -58,7 +55,6 @@ function extractListingCount(text) {
 }
 
 function extractRating({ fullText, scriptsJson }) {
-  // 1) JSON-LD avec aggregateRating si présent
   try {
     for (const json of scriptsJson) {
       const obj = JSON.parse(json);
@@ -71,9 +67,6 @@ function extractRating({ fullText, scriptsJson }) {
       }
     }
   } catch {}
-
-  // 2) Heuristiques sur le texte
-  // ex: "4,82 · 120 commentaires" | "4.9 rating" | "Note globale 4,85"
   const candidates = [
     /Note\s+globale\s+([0-9]+[.,][0-9]+)/i,
     /([0-9]+[.,][0-9]+)\s*[★\*]/i,
@@ -91,26 +84,21 @@ function extractRating({ fullText, scriptsJson }) {
 }
 
 function extractName({ metaTitle, h1, metaDesc, fullText }) {
-  // 1) og:title ou twitter:title souvent contiennent le nom
   if (metaTitle) {
-    // exemples: "Profil de Marie – Paris - Airbnb" | "Marie - Airbnb"
     const cleaned = metaTitle
       .replace(/Profil de\s*/i, "")
       .replace(/\s*[-–—]\s*Airbnb.*/i, "")
       .trim();
     if (cleaned && cleaned.length <= 80) return cleaned;
   }
-  // 2) h1 s’il ressemble à un nom
   if (h1) {
     const h = h1.trim();
     if (h && h.length <= 80 && !/Airbnb/i.test(h)) return h;
   }
-  // 3) meta description
   if (metaDesc) {
     const m = metaDesc.match(/Profil de\s+([^–—-]+)[–—-]/i);
     if (m) return m[1].trim();
   }
-  // 4) heuristique texte
   const m2 = fullText.match(/Profil de\s+([^\n]+)\n/i);
   if (m2) return m2[1].trim();
   return null;
@@ -128,7 +116,7 @@ async function scrapeOne(page, url, debugDir, idx) {
   };
 
   try {
-    const timeoutMs = 70000;
+    const timeoutMs = 90000;
 
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -136,22 +124,20 @@ async function scrapeOne(page, url, debugDir, idx) {
     );
     await page.setViewport({ width: 1366, height: 900 });
 
-    // Anti-automation flags
-    await page.goto(url, { waitUntil: "networkidle2", timeout: timeoutMs });
-    await page.waitForTimeout(5000);
+    await page.goto(url, { waitUntil: "networkidle0", timeout: timeoutMs });
+    await delay(6000);
 
     const data = await page.evaluate(() => {
-      const get = (sel, attr) => document.querySelector(sel)?.getAttribute(attr) || null;
-      const metaTitle = get('meta[property="og:title"]', "content") ||
-                        get('meta[name="twitter:title"]', "content") || null;
-      const metaDesc  = get('meta[name="description"]', "content") || null;
+      const getAttr = (sel, attr) => document.querySelector(sel)?.getAttribute(attr) || null;
+      const metaTitle = getAttr('meta[property="og:title"]', "content") ||
+                        getAttr('meta[name="twitter:title"]', "content") || null;
+      const metaDesc  = getAttr('meta[name="description"]', "content") || null;
       const h1 = document.querySelector("h1")?.innerText || null;
       const fullText = document.body?.innerText || "";
 
       const scriptsJson = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map(s => s.textContent || "");
 
-      // Certaines apps Next exposent __NEXT_DATA__ ou __NEXT_ROUTER_DATA__
       let nextData = null;
       try {
         // @ts-ignore
@@ -161,14 +147,12 @@ async function scrapeOne(page, url, debugDir, idx) {
       return { metaTitle, metaDesc, h1, fullText, scriptsJson, nextData };
     });
 
-    // Sauvegarde debug (HTML + screenshot)
     const html = await page.content();
     const shotPath = path.join(debugDir, `page_${idx + 1}.png`);
     const htmlPath = path.join(debugDir, `page_${idx + 1}.html`);
     fs.writeFileSync(htmlPath, html, "utf8");
     await page.screenshot({ path: shotPath, fullPage: true });
 
-    // Parsing
     result.name = extractName(data);
     result.rating = extractRating(data);
     result.joined_year = extractJoinedYear(data.fullText);
@@ -177,7 +161,6 @@ async function scrapeOne(page, url, debugDir, idx) {
     }
     result.listing_count = extractListingCount(data.fullText);
 
-    // Notes utiles si partiel
     const missing = [];
     for (const key of ["name", "rating", "joined_year", "listing_count"]) {
       if (result[key] == null) missing.push(key);
@@ -209,15 +192,13 @@ async function main() {
 
   const page = await browser.newPage();
 
-  // Réessais légers si blocage ponctuel
   const results = [];
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
     let res = await scrapeOne(page, url, debugDir, i);
 
     if (/Champs manquants/.test(res.notes) || /Erreur/.test(res.notes)) {
-      // 1 retry
-      await page.waitForTimeout(4000);
+      await delay(5000);
       res = await scrapeOne(page, url, debugDir, i);
     }
     results.push(res);
@@ -226,7 +207,6 @@ async function main() {
 
   await browser.close();
 
-  // CSV
   const csv = Papa.unparse(results, {
     columns: ["url", "name", "rating", "joined_year", "years_active", "listing_count", "notes"]
   });
