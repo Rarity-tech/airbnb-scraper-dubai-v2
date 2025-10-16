@@ -15,10 +15,25 @@ const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 function readUrls() {
   if (!fs.existsSync(INPUT_FILE)) throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
-  const lines = fs.readFileSync(INPUT_FILE, "utf8").split(/\r?\n/).map(s=>s.trim()).filter(s=>s && !s.startsWith("#"));
-  if (!lines.length) throw new Error("Aucune URL dans urls.txt");
-  return Array.from(new Set(lines));
+
+  // 1) lire toutes les lignes
+  let lines = fs.readFileSync(INPUT_FILE, "utf8")
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(s => s && !s.startsWith("#"));
+
+  // 2) si l’utilisateur a collé un CSV/TSV, ne prendre que la 1re colonne
+  lines = lines.map(s => s.split(/[,;\t]/)[0].trim());
+
+  // 3) garder TOUTES les lignes (pas de déduplication)
+  //    optionnel: ne garder que les URLs valides
+  const urls = lines.filter(s => /^https?:\/\//i.test(s));
+
+  if (!urls.length) throw new Error("Aucune URL valide dans urls.txt");
+  console.log(`Detecté ${urls.length} URL(s) dans urls.txt`);
+  return urls;
 }
+
 function ensureOutDir() {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR);
   const dbg = path.join(OUT_DIR, "debug");
