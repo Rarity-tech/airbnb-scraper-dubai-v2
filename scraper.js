@@ -11,28 +11,7 @@ const INPUT_FILE = path.join(__dirname, "urls.txt");
 const OUT_DIR = path.join(__dirname, "output");
 const OUT_CSV = path.join(OUT_DIR, "results.csv");
 const NOW_YEAR = new Date().getFullYear();
-
-// CONFIGURATION DE PERFORMANCE
-const PARALLEL_WORKERS = 3; // Scraper 3 profils en parallèle (safe pour éviter détection)
-const MIN_DELAY_BETWEEN_REQUESTS = 800; // Délai minimum entre requêtes (ms)
-const MAX_DELAY_BETWEEN_REQUESTS = 1500; // Délai maximum entre requêtes (ms)
-const PAGE_LOAD_WAIT = 3500; // Attente pour la redirection Airbnb (réduit de 8s à 3.5s)
-
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
-const randomDelay = () => delay(Math.random() * (MAX_DELAY_BETWEEN_REQUESTS - MIN_DELAY_BETWEEN_REQUESTS) + MIN_DELAY_BETWEEN_REQUESTS);
-
-// Rotation d'User Agents pour éviter détection
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-];
-
-function getRandomUserAgent() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
 
 function readUrls() {
   if (!fs.existsSync(INPUT_FILE)) throw new Error(`Fichier urls.txt introuvable: ${INPUT_FILE}`);
@@ -46,8 +25,7 @@ function readUrls() {
   const urls = lines.filter(s => /^https?:\/\//i.test(s));
 
   if (!urls.length) throw new Error("Aucune URL valide dans urls.txt");
-  console.log(`✅ Détecté ${urls.length} URL(s) dans urls.txt`);
-  console.log(`⚡ Mode parallèle : ${PARALLEL_WORKERS} workers simultanés`);
+  console.log(`✅ ${urls.length} URL(s) à scraper`);
   return urls;
 }
 
@@ -217,35 +195,74 @@ function pickName({ h1Text, fullText, metaTitle, metaDesc, nextData, fullHTML })
   return null;
 }
 
-async function gotoRobust(page, url) {
+// ACCEPTER LES COOKIES AIRBNB
+async function acceptCookies(page) {
   try {
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
-  } catch {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    // Attendre et cliquer sur le bouton d'acceptation des cookies
+    const cookieSelectors = [
+      'button:has-text("Tout accepter")',
+      'button:has-text("Accepter")',
+      'button:has-text("Accept all")',
+      'button:has-text("Accept")',
+      'button:has-text("OK")',
+      'button[data-testid="accept-btn"]',
+      '[data-testid="main-cookies-banner-container"] button'
+    ];
+    
+    for (const selector of cookieSelectors) {
+      try {
+        const button = await page.$(selector);
+        if (button) {
+          await button.click();
+          console.log('  ✓ Cookies acceptés');
+          await delay(1000);
+          return true;
+        }
+      } catch {}
+    }
+  } catch (e) {
+    // Pas grave si ça échoue, on continue
   }
+  return false;
 }
 
-async function scrapeOne(page, url, debugDir, idx) {
+async function scrapeOne(page, url, debugDir, idx, retryCount = 0) {
   const out = { url, name: null, rating: null, joined_year: null, years_active: null, listing_count: null, notes: "" };
 
   try {
-    await page.setUserAgent(getRandomUserAgent());
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     await page.setExtraHTTPHeaders({ "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8" });
-    await page.setViewport({ width: 1366, height: 900 });
+    await page.setViewport({ width: 1920, height: 1080 });
 
-    await gotoRobust(page, url);
+    console.log(`  → Navigation vers ${url.substring(0, 60)}...`);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     
-    // Attendre la redirection Airbnb (optimisé à 3.5s au lieu de 8s)
-    await page.waitForSelector("body", { timeout: 10000 });
-    await delay(PAGE_LOAD_WAIT);
+    // CRITIQUE : Accepter les cookies IMMÉDIATEMENT
+    await acceptCookies(page);
     
-    // Scrolls rapides
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight * 0.5));
-    await delay(500);
+    // Attendre que body soit chargé
+    await page.waitForSelector("body", { timeout: 15000 });
+    
+    // CRITIQUE : Attendre LONGTEMPS pour la redirection Airbnb
+    console.log('  ⏳ Attente de la vraie page (6 secondes)...');
+    await delay(6000);
+    
+    // Vérifier qu'on n'est PAS sur une page d'erreur
+    const pageText = await page.evaluate(() => document.body.innerText);
+    if (pageText.includes("l'hôte") && pageText.length < 500) {
+      throw new Error("Page d'erreur détectée (cookies non acceptés)");
+    }
+    
+    // Scrolls LENTS pour charger tout le contenu
+    console.log('  📜 Scroll pour charger le contenu...');
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight * 0.3));
+    await delay(1500);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight * 0.6));
+    await delay(1500);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await delay(700);
+    await delay(2000);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await delay(500);
+    await delay(1500);
 
     const data = await page.evaluate(() => {
       const q = (sel) => document.querySelector(sel);
@@ -281,6 +298,11 @@ async function scrapeOne(page, url, debugDir, idx) {
     out.rating = extractRating(data);
     out.listing_count = extractListingCount(data.fullText, data.fullHTML);
 
+    // Vérifier si le nom est valide
+    if (!out.name || out.name === "l'hôte" || out.name.length < 2) {
+      throw new Error("Nom invalide - page non chargée correctement");
+    }
+
     let year = null;
     try {
       if (data.nextData) {
@@ -312,50 +334,15 @@ async function scrapeOne(page, url, debugDir, idx) {
 
     return out;
   } catch (e) {
-    out.notes = `Erreur: ${e?.message || String(e)}`;
+    // RETRY automatique (max 2 fois)
+    if (retryCount < 2) {
+      console.log(`  ⚠️ Erreur: ${e.message} - RETRY ${retryCount + 1}/2`);
+      await delay(3000);
+      return await scrapeOne(page, url, debugDir, idx, retryCount + 1);
+    }
+    out.notes = `Erreur après 3 tentatives: ${e?.message || String(e)}`;
     return out;
   }
-}
-
-// WORKER PARALLÈLE
-async function worker(workerId, browser, urlsQueue, results, debugDir, totalUrls) {
-  const page = await browser.newPage();
-  
-  // Bloquer images/fonts pour aller plus vite
-  await page.setRequestInterception(true);
-  page.on("request", req => {
-    const t = req.resourceType();
-    if (t === "image" || t === "font" || t === "media") req.abort();
-    else req.continue();
-  });
-
-  while (urlsQueue.length > 0) {
-    const urlData = urlsQueue.shift();
-    if (!urlData) break;
-
-    const { url, idx } = urlData;
-    const progress = totalUrls - urlsQueue.length;
-    
-    console.log(`[Worker ${workerId}] [${progress}/${totalUrls}] Scraping: ${url.substring(0, 60)}...`);
-    
-    let result = await scrapeOne(page, url, debugDir, idx);
-    
-    // Retry une fois en cas d'erreur
-    if (result.notes && /timeout|error/i.test(result.notes)) {
-      console.log(`[Worker ${workerId}] ⚠️ Retry pour ${url.substring(0, 40)}...`);
-      await randomDelay();
-      result = await scrapeOne(page, url, debugDir, idx);
-    }
-    
-    results.push(result);
-    console.log(`[Worker ${workerId}] ✓ ${result.name || "?"} | ★${result.rating ?? "?"} | ${result.listing_count ?? "?"} annonces | ${result.joined_year ?? "?"}`)
-    
-    // Délai aléatoire entre requêtes
-    await randomDelay();
-  }
-
-  await page.close();
-  console.log(`[Worker ${workerId}] 🏁 Terminé`);
 }
 
 async function main() {
@@ -370,36 +357,47 @@ async function main() {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--disable-gpu",
-      "--window-size=1366,900"
+      "--window-size=1920,1080"
     ]
   });
 
-  // Préparer la queue avec indices
-  const urlsQueue = urls.map((url, idx) => ({ url, idx }));
+  const page = await browser.newPage();
+  
+  // Bloquer images/fonts pour aller plus vite
+  await page.setRequestInterception(true);
+  page.on("request", req => {
+    const t = req.resourceType();
+    if (t === "image" || t === "font" || t === "media") req.abort();
+    else req.continue();
+  });
+
   const results = [];
-
-  console.log(`\n🚀 Démarrage de ${PARALLEL_WORKERS} workers...\n`);
-
-  // Lancer les workers en parallèle
-  const workers = [];
-  for (let i = 0; i < PARALLEL_WORKERS; i++) {
-    workers.push(worker(i + 1, browser, urlsQueue, results, debugDir, urls.length));
+  
+  for (let i = 0; i < urls.length; i++) {
+    console.log(`\n[${i+1}/${urls.length}] Scraping...`);
+    const result = await scrapeOne(page, urls[i], debugDir, i);
+    results.push(result);
+    
+    console.log(`  ✓ ${result.name || "?"} | ★${result.rating ?? "?"} | ${result.listing_count ?? "?"} annonces | ${result.joined_year ?? "?"}`);
+    if (result.notes) console.log(`  ⚠️ ${result.notes}`);
+    
+    // Délai entre chaque profil (important pour éviter détection)
+    if (i < urls.length - 1) {
+      const delayTime = 2000 + Math.random() * 2000; // 2-4 secondes
+      console.log(`  ⏳ Attente ${(delayTime/1000).toFixed(1)}s...`);
+      await delay(delayTime);
+    }
   }
-
-  // Attendre que tous les workers terminent
-  await Promise.all(workers);
 
   const csv = Papa.unparse(results, { columns: ["url","name","rating","joined_year","years_active","listing_count","notes"] });
   fs.writeFileSync(OUT_CSV, "\uFEFF" + csv, "utf8");
   
   const duration = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-  const avgTime = ((Date.now() - startTime) / 1000 / urls.length).toFixed(1);
+  const successful = results.filter(r => r.name && r.name !== "l'hôte").length;
   
   console.log(`\n✅ TERMINÉ !`);
-  console.log(`📊 ${results.length} profils scrapés en ${duration} minutes`);
-  console.log(`⚡ Temps moyen: ${avgTime}s par profil`);
+  console.log(`📊 ${successful}/${results.length} profils scrapés avec succès`);
+  console.log(`⏱️ Durée totale: ${duration} minutes`);
   console.log(`💾 Résultats: ${OUT_CSV}\n`);
 
   await browser.close();
